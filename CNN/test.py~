@@ -1,0 +1,177 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+import tensorflow as tf
+import csv
+import numpy as np
+import cv2
+import random
+import glob
+import numpy as np
+
+def weight_variable(shape):
+    # --- define weight
+    initial = tf.constant(0.01, shape=shape)
+    return tf.Variable(initial)
+
+def bias_variable(shape):
+    # --- define bias
+    initial = tf.constant(0.01, shape=shape)
+    return tf.Variable(initial)
+
+def conv1d(x, W):
+    # --- define convolution
+    return tf.nn.conv2d(x, W, strides=[1, 2, 2, 1], padding='VALID')
+
+def conv2d(x, W):
+    # --- define convolution
+    return tf.nn.conv2d(x, W, strides=[1, 1, 1, 1], padding='VALID')
+
+def lrelu(x):
+    x1 = tf.maximum(x,x/5.5)
+    return x1
+
+
+def CNN(image,laser,keep_prob):
+    with tf.name_scope('norm1') as scope:
+        norm1=tf.nn.lrn(image,4,bias=1.0,alpha=0.001/9.0,beta=0.75)
+
+    with tf.name_scope('conv1') as scope:
+        W_conv1 = weight_variable([5, 5, 3, 24])
+        b_conv1 = bias_variable([24])
+        h_conv1 = lrelu(conv1d(norm1, W_conv1) + b_conv1)
+
+    with tf.name_scope('conv2') as scope:
+        W_conv2 = weight_variable([5, 5, 24, 36])
+        b_conv2 = bias_variable([36])
+        h_conv2 = lrelu(conv1d(h_conv1, W_conv2) + b_conv2)
+
+    with tf.name_scope('conv3') as scope:
+        W_conv3 = weight_variable([5, 5, 36, 48])
+        b_conv3 = bias_variable([48])
+        h_conv3 = lrelu(conv1d(h_conv2, W_conv3) + b_conv3)
+
+    with tf.name_scope('conv4') as scope:
+        W_conv4 = weight_variable([3, 3, 48, 64])
+        b_conv4 = bias_variable([64])
+        h_conv4 = lrelu(conv2d(h_conv3, W_conv4) + b_conv4)
+
+    with tf.name_scope('conv5') as scope:
+        W_conv5 = weight_variable([3, 3, 64, 64])
+        b_conv5 = bias_variable([64])
+        h_conv5 = lrelu(conv2d(h_conv4, W_conv5) + b_conv5)
+
+    h_conv5_flatten = tf.reshape(h_conv5, [-1,1152])
+    h_conv5_urg = tf.concat(1,[h_conv5_flatten,laser])
+
+    with tf.name_scope('fc1') as scope:
+        W_fc1 = weight_variable([1152+560, 100])
+        b_fc1 = bias_variable([100])
+        h_fc1 = lrelu(tf.matmul(h_conv5_urg, W_fc1) + b_fc1)
+
+    with tf.name_scope('fc2') as scope:
+        W_fc2 = weight_variable([100,50])
+        b_fc2 = bias_variable([50])
+        h_fc2 = lrelu(tf.matmul(h_fc1, W_fc2) + b_fc2)
+
+
+    with tf.name_scope('fc3') as scope:
+        W_fc3 = weight_variable([50,10])
+        b_fc3 = bias_variable([10])
+        h_fc3 = lrelu(tf.matmul(h_fc2, W_fc3) + b_fc3)
+
+    h_fc3_drop = tf.nn.dropout(h_fc3, keep_prob)
+
+    with tf.name_scope('fc4') as scope:
+        W_fc4 = weight_variable([10,1])
+        b_fc4 = bias_variable([1])
+        y_conv = tf.matmul(h_fc3_drop, W_fc4) + b_fc4
+
+    return y_conv
+
+
+image1 = tf.placeholder(tf.float32, [None, 200, 66, 3])
+laser1 = tf.placeholder(tf.float32, [None, 560])
+signal1 = tf.placeholder(tf.float32, [None,3])
+y_r = tf.placeholder(tf.float32, [None, 1])
+keep_prob = tf.placeholder(tf.float32)
+
+y_conv = CNN(image1,laser1,keep_prob)
+
+loss = tf.sqrt(tf.reduce_mean(tf.square(y_conv-y_r)))
+train_step = tf.train.AdamOptimizer(1e-4).minimize(loss)
+
+
+saver = tf.train.Saver(keep_checkpoint_every_n_hours = 1.0)
+
+sess = tf.InteractiveSession()
+sess.run(tf.global_variables_initializer())
+saver.restore(sess, "model/modelurg.ckpt")
+
+
+train_image = []
+train_laser = []
+train_signal = []
+train_r = []
+
+degree = ["20"]
+for deg in degree:
+	image_file = glob.glob("../image/train1/video0/degree"+deg+"/*.png")
+	image_file.sort()
+	laser = np.load("../image/train1/video0/degree"+deg+"/laser.npy") 
+	signal = np.loadtxt("../image/train1/signal.csv",delimiter=",") 
+	label = np.loadtxt("../image/train1/video0/degree"+deg+"/Twist.csv",delimiter=",")
+
+	for l in range(len(image_file)):
+	  image = cv2.imread(image_file[l])
+	  image = image.reshape((200,66,3))
+	  train_image.append(image)
+	  train_laser.append(laser[l])
+	  train_signal.append(signal[l])
+	  train_r.append(label[l][1])
+
+train_image = np.asarray(train_image)/255.0
+train_laser = np.asarray(train_laser)
+train_laser[train_laser==float("inf")]=50.0
+train_laser = train_laser/50.0
+train_signal = np.asarray(train_signal).reshape((len(train_signal),3))
+train_r = np.asarray(train_r).reshape((len(train_r),1))
+
+print train_image.shape
+print train_laser.shape
+print train_signal.shape
+print train_r.shape
+
+
+random_seq = range(train_image.shape[0])
+random.shuffle(random_seq)
+
+test_image = train_image[random_seq[0:train_image.shape[0]/10],:,:,:]
+test_laser = train_laser[random_seq[0:train_image.shape[0]/10],:]
+test_signal = train_signal[random_seq[0:train_image.shape[0]/10],:]
+test_r = train_r[random_seq[0:train_image.shape[0]/10],:]
+
+
+train_image1 = train_image[random_seq[train_image.shape[0]/10:train_image.shape[0]],:,:,:]
+train_r1 = train_r[random_seq[train_image.shape[0]/10:train_image.shape[0]],:]
+train_laser1 = train_laser[random_seq[train_image.shape[0]/10:train_image.shape[0]],:]
+train_signal1 = train_signal[random_seq[train_image.shape[0]/10:train_image.shape[0]],:]
+
+
+
+
+l=0
+trainrmse = 1.0
+batchSize = 1
+itter = len(image_file)/batchSize
+
+rmse = sess.run(y_conv, feed_dict={image1: train_image,laser1:train_laser , y_r: train_r,keep_prob:1.0})
+rmse = np.asarray(rmse).reshape(rmse.shape[0],1)
+print rmse.shape
+
+f = open('rmse.csv', 'w')
+
+writer = csv.writer(f, lineterminator='\n')
+for row in rmse:
+   writer.writerow(row)
+
+f.close()
